@@ -1,5 +1,7 @@
 package entity
 
+import "time"
+
 type Person struct {
 	ID          int     `db:"id" json:"id"`
 	Name        string  `db:"name" json:"name" validate:"required"`
@@ -8,5 +10,5 @@ type Person struct {
 	Age         *int    `db:"age" json:"age,omitempty"`
 	Gender      *string `db:"gender" json:"gender,omitempty"`
 	Nationality *string `db:"nationality" json:"nationality,omitempty"`
-	CreatedAt   string  `db:"created_at" json:"created_at"`
+	CreatedAt   time.Time  `db:"created_at" json:"created_at"`
 }
