@@ -10,7 +10,6 @@ import (
 var DB *sqlx.DB
 
 func Init() {
-
 	_ = godotenv.Load()
 	cfg := LoadConfigFromEnv()
 	db, err := sqlx.Connect("postgres", cfg.DSN())
@@ -27,3 +26,4 @@ func Init() {
 	DB = db
 	log.Println("✅ Подключение к PostgreSQL успешно")
 }
+
