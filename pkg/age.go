@@ -8,10 +8,6 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
-func ptrInt(i int) *int {
-	return &i
-}
-
 func FetchAge(ctx context.Context, name string) (*int, error) {
 	apiURL := "https://api.agify.io/?name=" + url.PathEscape(name)
 
@@ -32,7 +28,7 @@ func FetchAge(ctx context.Context, name string) (*int, error) {
 	defer resp.Body.Close()
 
 	var result struct {
-		Age int `json:"age"`
+		Age *int `json:"age"`
 	}
 
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
@@ -40,7 +36,10 @@ func FetchAge(ctx context.Context, name string) (*int, error) {
 		return nil, err
 	}
 
-	log.Info().Str("name", name).Int("age", result.Age).Msg("Successfully fetched age from API")
-
-	return ptrInt(result.Age), nil
+	if result.Age != nil {
+		log.Info().Str("name", name).Int("age", *result.Age).Msg("Successfully fetched age from API")
+} else {
+		log.Info().Str("name", name).Msg("No age returned from API")
+}
+return result.Age, nil
 }

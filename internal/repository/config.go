@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 )
+
 type Config struct{
 	Host string
 	Port string
@@ -11,6 +12,7 @@ type Config struct{
 	Password string
 	Name string
 }
+
 func LoadConfigFromEnv() *Config {
 	return &Config{
 		Host:				os.Getenv("DB_HOST"),
