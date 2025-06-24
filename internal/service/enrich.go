@@ -3,12 +3,14 @@ package service
 import (
 	"context"
 	"time"
+
+	"github.com/rs/zerolog/log"
+
+	"github.com/k1lls3x/person-service/internal/client"
 	"github.com/k1lls3x/person-service/internal/entity"
-	"github.com/k1lls3x/person-service/pkg"
-		"github.com/rs/zerolog/log"
 )
 
-func enrichFromAPI(parentCtx context.Context, person *entity.Person) error {
+func enrichFromAPI(parentCtx context.Context, apiClient *client.APIClient, person *entity.Person) error {
 	ctx, cancel := context.WithTimeout(parentCtx, 3*time.Second)
 	defer cancel()
 
@@ -26,7 +28,7 @@ func enrichFromAPI(parentCtx context.Context, person *entity.Person) error {
 	ch := make(chan result, 3)
 
 	go func() {
-		age, err := pkg.FetchAge(ctx, person.Name)
+		age, err := apiClient.FetchAge(ctx, person.Name)
 		if err != nil {
 			log.Error().Err(err).Str("name", person.Name).Msg("Failed to fetch age")
 		}
@@ -34,7 +36,7 @@ func enrichFromAPI(parentCtx context.Context, person *entity.Person) error {
 	}()
 
 	go func() {
-		nat, err := pkg.FetchNationality(ctx, person.Name)
+		nat, err := apiClient.FetchNationality(ctx, person.Name)
 		if err != nil {
 			log.Error().Err(err).Str("name", person.Name).Msg("Failed to fetch nationality")
 		}
@@ -42,7 +44,7 @@ func enrichFromAPI(parentCtx context.Context, person *entity.Person) error {
 	}()
 
 	go func() {
-		gender, err := pkg.FetchGender(ctx, person.Name)
+		gender, err := apiClient.FetchGender(ctx, person.Name)
 		if err != nil {
 			log.Error().Err(err).Str("name", person.Name).Msg("Failed to fetch gender")
 		}

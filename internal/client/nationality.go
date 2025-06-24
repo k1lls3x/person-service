@@ -1,19 +1,20 @@
-package pkg
+package client
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/url"
-	"context"
+
 	"github.com/rs/zerolog/log"
 )
 
-func ptrString(str string) *string{
+func ptrString(str string) *string {
 	return &str
 }
 
-func FetchNationality(ctx context.Context, name string) (*string, error) {
-	apiURL := "https://api.nationalize.io/?name=" + url.PathEscape(name)
+func (c *APIClient) FetchNationality(ctx context.Context, name string) (*string, error) {
+	apiURL := c.NationalityURL + "?name=" + url.PathEscape(name)
 
 	log.Info().Str("name", name).Msg("Fetching nationality from API")
 	log.Debug().Str("url", apiURL).Msg("Sending request to external API")
@@ -24,7 +25,7 @@ func FetchNationality(ctx context.Context, name string) (*string, error) {
 		return nil, err
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := c.HTTPClient.Do(req)
 	if err != nil {
 		log.Error().Err(err).Str("url", apiURL).Msg("Failed to send request to external API")
 		return nil, err
