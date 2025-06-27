@@ -6,43 +6,51 @@
 package main
 
 import (
-	"log"
 	"net/http"
+	"os"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/joho/godotenv"
 	"github.com/jmoiron/sqlx"
-	_ "github.com/lib/pq"
-	 "github.com/swaggo/http-swagger"
+	"github.com/joho/godotenv"
+	"github.com/k1lls3x/person-service/internal/client"
+	"github.com/k1lls3x/person-service/internal/handler"
 	"github.com/k1lls3x/person-service/internal/repository"
 	"github.com/k1lls3x/person-service/internal/service"
-	"github.com/k1lls3x/person-service/internal/handler"
+	_ "github.com/lib/pq"
+	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
+	"github.com/swaggo/http-swagger"
 )
 
 func main() {
 
 	if err := godotenv.Load("../../.env"); err != nil {
-		log.Println("No .env file found (можно проигнорировать, если переменные уже в окружении)")
+		log.Info().Msg("No .env file found (можно проигнорировать, если переменные уже в окружении)")
 	}
 
 	cfg := repository.LoadConfigFromEnv()
+	lvl, err := zerolog.ParseLevel(cfg.LogLevel)
+	if err != nil {
+		lvl = zerolog.InfoLevel
+	}
+	zerolog.SetGlobalLevel(lvl)
+	log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stdout})
 	dsn := cfg.DSN()
 
 	db, err := sqlx.Connect("postgres", dsn)
 	if err != nil {
-		log.Fatalf("❌ Ошибка подключения к PostgreSQL: %v", err)
+		log.Fatal().Err(err).Msg("Ошибка подключения к PostgreSQL")
 	}
 	defer db.Close()
 
 	if err := db.Ping(); err != nil {
-		log.Fatalf("❌ PostgreSQL не отвечает: %v", err)
+		log.Fatal().Err(err).Msg("PostgreSQL не отвечает")
 	}
-	log.Println("✅ Подключение к PostgreSQL успешно")
+	log.Info().Msg("Подключение к PostgreSQL успешно")
 
-
-	personService := service.NewPersonService(db)
+	apiClient := client.NewAPIClient(cfg.AgeAPIURL, cfg.GenderAPIURL, cfg.NationalityAPIURL)
+	personService := service.NewPersonService(db, apiClient)
 	h := handler.NewHandler(personService)
-
 
 	r := chi.NewRouter()
 	r.Post("/api/persons", h.CreatePerson)
@@ -51,8 +59,8 @@ func main() {
 	r.Delete("/api/persons/{id}", h.DeletePerson)
 	r.Get("/swagger/*", httpSwagger.WrapHandler)
 	addr := ":8888"
-	log.Printf("Starting server on %s ...", addr)
+	log.Info().Msgf("Starting server on %s ...", addr)
 	if err := http.ListenAndServe(addr, r); err != nil {
-		log.Fatalf("Server failed: %v", err)
+		log.Fatal().Err(err).Msg("Server failed")
 	}
 }

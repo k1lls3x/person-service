@@ -4,7 +4,7 @@ CREATE TABLE persons (
     surname VARCHAR(100) NOT NULL,
     patronymic VARCHAR(100),
     age INT,
-    gender VARCHAR(20),
+    gender VARCHAR(6) CHECK (gender IN ('male','female')),
     nationality VARCHAR(100),
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP

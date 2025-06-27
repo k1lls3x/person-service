@@ -2,13 +2,14 @@ package handler
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/k1lls3x/person-service/internal/entity"
 	"github.com/k1lls3x/person-service/internal/service"
-	"log"
+	"github.com/rs/zerolog/log"
 )
 
 type Handler struct {
@@ -25,32 +26,37 @@ func NewHandler(personService *service.PersonService) *Handler {
 // @Accept json
 // @Produce json
 // @Param id path int true "ID"
-// @Param person body entity.Person true "Новые данные"
+// @Param person body entity.UpdatePersonInput true "Новые данные"
 // @Success 200 {object} entity.Person
 // @Failure 400 {string} string "bad request"
 // @Failure 404 {string} string "not found"
 // @Failure 500 {string} string "server error"
 // @Router /api/persons/{id} [put]
 func (h *Handler) UpdatePerson(w http.ResponseWriter, r *http.Request) {
-	idStr := chi.URLParam(r,"id")
+	idStr := chi.URLParam(r, "id")
 	id, err := strconv.Atoi(idStr)
 
 	if err != nil {
 		http.Error(w, "Invalid id", http.StatusBadRequest)
 		return
 	}
-	var input entity.Person
+	var input entity.UpdatePersonInput
 
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
 		http.Error(w, "Invalid input", http.StatusBadRequest)
 		return
 	}
-	if err := h.personService.UpdatePerson(id, &input); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+	person, err := h.personService.UpdatePerson(id, &input)
+	if err != nil {
+		if errors.Is(err, service.ErrNotFound) {
+			http.Error(w, err.Error(), http.StatusNotFound)
+		} else {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		}
 		return
 	}
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(input)
+	json.NewEncoder(w).Encode(person)
 
 }
 
@@ -59,28 +65,29 @@ func (h *Handler) UpdatePerson(w http.ResponseWriter, r *http.Request) {
 // @Tags persons
 // @Accept json
 // @Produce json
-// @Param person body entity.Person true "Персона"
+// @Param person body entity.CreatePersonInput true "Персона"
 // @Success 201 {object} entity.Person
 // @Router /api/persons [post]
 func (h *Handler) CreatePerson(w http.ResponseWriter, r *http.Request) {
-	log.Println("CreatePerson handler called")
-	var input entity.Person
+	log.Debug().Msg("CreatePerson handler called")
+	var input entity.CreatePersonInput
 
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
 		http.Error(w, "Invalid JSON", http.StatusBadRequest)
-        return
+		return
 	}
 	if input.Name == "" || input.Surname == "" {
 		http.Error(w, "Name and surname are required", http.StatusBadRequest)
 		return
 	}
-	if err := h.personService.CreatePerson(&input); err != nil {
+	person, err := h.personService.CreatePerson(&input)
+	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
 	w.WriteHeader(http.StatusCreated)
-	if err := json.NewEncoder(w).Encode(input); err != nil {
+	if err := json.NewEncoder(w).Encode(person); err != nil {
 		http.Error(w, "Failed to encode response", http.StatusInternalServerError)
 		return
 	}
@@ -98,17 +105,21 @@ func (h *Handler) CreatePerson(w http.ResponseWriter, r *http.Request) {
 // @Failure 500 {string} string "server error"
 // @Router /api/persons/{id} [delete]
 func (h *Handler) DeletePerson(w http.ResponseWriter, r *http.Request) {
-    idStr := chi.URLParam(r, "id")
-    id, err := strconv.Atoi(idStr)
-    if err != nil {
-        http.Error(w, "Invalid id", http.StatusBadRequest)
-        return
-    }
-    if err := h.personService.DeletePersonById(id); err != nil {
-        http.Error(w, err.Error(), http.StatusNotFound)
-        return
-    }
-    w.WriteHeader(http.StatusNoContent)
+	idStr := chi.URLParam(r, "id")
+	id, err := strconv.Atoi(idStr)
+	if err != nil {
+		http.Error(w, "Invalid id", http.StatusBadRequest)
+		return
+	}
+	if err := h.personService.DeletePersonById(id); err != nil {
+		if errors.Is(err, service.ErrNotFound) {
+			http.Error(w, err.Error(), http.StatusNotFound)
+		} else {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		}
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // GetPersons godoc
@@ -130,56 +141,52 @@ func (h *Handler) GetPersons(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 
 	filter := entity.PersonFilter{
-			Name:        getStringPtr(q.Get("name")),
-			Surname:     getStringPtr(q.Get("surname")),
-			Gender:      getStringPtr(q.Get("gender")),
-			Nationality: getStringPtr(q.Get("nationality")),
+		Name:        getStringPtr(q.Get("name")),
+		Surname:     getStringPtr(q.Get("surname")),
+		Gender:      getStringPtr(q.Get("gender")),
+		Nationality: getStringPtr(q.Get("nationality")),
 	}
-
 
 	if minAgeStr := q.Get("minAge"); minAgeStr != "" {
-			if minAge, err := strconv.Atoi(minAgeStr); err == nil {
-					filter.MinAge = &minAge
-			} else {
-					http.Error(w, "minAge must be an integer", http.StatusBadRequest)
-					return
-			}
+		if minAge, err := strconv.Atoi(minAgeStr); err == nil {
+			filter.MinAge = &minAge
+		} else {
+			http.Error(w, "minAge must be an integer", http.StatusBadRequest)
+			return
+		}
 	}
-
 
 	if maxAgeStr := q.Get("maxAge"); maxAgeStr != "" {
-			if maxAge, err := strconv.Atoi(maxAgeStr); err == nil {
-					filter.MaxAge = &maxAge
-			} else {
-					http.Error(w, "maxAge must be an integer", http.StatusBadRequest)
-					return
-			}
+		if maxAge, err := strconv.Atoi(maxAgeStr); err == nil {
+			filter.MaxAge = &maxAge
+		} else {
+			http.Error(w, "maxAge must be an integer", http.StatusBadRequest)
+			return
+		}
 	}
-
 
 	if pageStr := q.Get("page"); pageStr != "" {
-			if page, err := strconv.Atoi(pageStr); err == nil {
-					filter.Page = page
-			} else {
-					http.Error(w, "page must be an integer", http.StatusBadRequest)
-					return
-			}
+		if page, err := strconv.Atoi(pageStr); err == nil {
+			filter.Page = page
+		} else {
+			http.Error(w, "page must be an integer", http.StatusBadRequest)
+			return
+		}
 	}
 
-
 	if pageSizeStr := q.Get("pageSize"); pageSizeStr != "" {
-			if pageSize, err := strconv.Atoi(pageSizeStr); err == nil {
-					filter.PageSize = pageSize
-			} else {
-					http.Error(w, "pageSize must be an integer", http.StatusBadRequest)
-					return
-			}
+		if pageSize, err := strconv.Atoi(pageSizeStr); err == nil {
+			filter.PageSize = pageSize
+		} else {
+			http.Error(w, "pageSize must be an integer", http.StatusBadRequest)
+			return
+		}
 	}
 
 	persons, err := h.personService.GetPersons(filter)
 	if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
 	}
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(persons)
@@ -187,7 +194,7 @@ func (h *Handler) GetPersons(w http.ResponseWriter, r *http.Request) {
 
 func getStringPtr(s string) *string {
 	if s == "" {
-			return nil
+		return nil
 	}
 	return &s
 }

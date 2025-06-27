@@ -1,14 +1,20 @@
 package service
 
 import (
-	"github.com/k1lls3x/person-service/internal/entity"
-
-	"github.com/rs/zerolog/log"
+	"context"
+	"errors"
 	"fmt"
 	"time"
+
+	"github.com/Masterminds/squirrel"
 	"github.com/jmoiron/sqlx"
-	"context"
+	"github.com/rs/zerolog/log"
+
+	"github.com/k1lls3x/person-service/internal/client"
+	"github.com/k1lls3x/person-service/internal/entity"
 )
+
+var ErrNotFound = errors.New("person not found")
 
 func deref(s *string) string {
 	if s != nil {
@@ -25,11 +31,12 @@ func derefInt(i *int) int {
 }
 
 type PersonService struct {
-	db *sqlx.DB
+	db        *sqlx.DB
+	apiClient *client.APIClient
 }
 
-func NewPersonService(db *sqlx.DB) *PersonService {
-	return &PersonService{db: db}
+func NewPersonService(db *sqlx.DB, apiClient *client.APIClient) *PersonService {
+	return &PersonService{db: db, apiClient: apiClient}
 }
 
 // CreatePerson godoc
@@ -43,36 +50,41 @@ func NewPersonService(db *sqlx.DB) *PersonService {
 // @Failure 400 {string} string "bad request"
 // @Failure 500 {string} string "server error"
 // @Router /api/persons [post]
-func (s *PersonService) CreatePerson(person *entity.Person) error {
+func (s *PersonService) CreatePerson(input *entity.CreatePersonInput) (*entity.Person, error) {
+	person := &entity.Person{
+		Name:       input.Name,
+		Surname:    input.Surname,
+		Patronymic: input.Patronymic,
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	tx, err := s.db.Beginx()
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to start transaction")
-		return fmt.Errorf("❌ failed to start transaction: %w", err)
+		return nil, fmt.Errorf("failed to start transaction: %w", err)
 	}
 
 	defer func() {
-    if r := recover(); r != nil {
-        tx.Rollback()
-        log.Error().Interface("panic", r).Msg("❌ Rolled back transaction")
-        panic(r)
-    }
+		if r := recover(); r != nil {
+			tx.Rollback()
+			log.Error().Interface("panic", r).Msg("❌ Rolled back transaction")
+			panic(r)
+		}
 	}()
 
-		log.Debug().
+	log.Debug().
 		Str("name", person.Name).
 		Str("surname", person.Surname).
 		Msg("Starting person enrichment")
 
-		if err := enrichFromAPI(ctx,person); err != nil {
-			log.Error().Err(err).Msg("❌ Failed to enrich person from API")
-			tx.Rollback()
-			return fmt.Errorf("❌ failed to enrich person: %w", err)
-		}
+	if err := enrichFromAPI(ctx, s.apiClient, person); err != nil {
+		log.Error().Err(err).Msg("Failed to enrich person from API")
+		tx.Rollback()
+		return nil, fmt.Errorf("failed to enrich person: %w", err)
+	}
 
-		log.Info().
+	log.Info().
 		Str("name", person.Name).
 		Str("surname", person.Surname).
 		Str("gender", deref(person.Gender)).
@@ -80,35 +92,35 @@ func (s *PersonService) CreatePerson(person *entity.Person) error {
 		Str("nationality", deref(person.Nationality)).
 		Msg("Person enriched successfully")
 
-		log.Debug().Msg("Inserting person into database")
+	log.Debug().Msg("Inserting person into database")
 
-		query := `
+	query := `
 				INSERT INTO persons (name, surname, patronymic, age, gender, nationality)
 				VALUES (:name, :surname, :patronymic, :age, :gender, :nationality)
 				RETURNING id, created_at
 		`
 
-		rows, err := tx.NamedQuery(query, person)
-		if err != nil {
-				tx.Rollback()
-				return fmt.Errorf("failed to insert person: %w", err)
-		}
-		defer rows.Close()
+	rows, err := tx.NamedQuery(query, person)
+	if err != nil {
+		tx.Rollback()
+		return nil, fmt.Errorf("failed to insert person: %w", err)
+	}
+	defer rows.Close()
 
-		if !rows.Next() {
-				tx.Rollback()
-				return fmt.Errorf("no rows returned")
-		}
+	if !rows.Next() {
+		tx.Rollback()
+		return nil, fmt.Errorf("no rows returned")
+	}
 
-		if err := rows.StructScan(person); err != nil {
-				tx.Rollback()
-				return fmt.Errorf("failed to scan returned values: %w", err)
-		}
+	if err := rows.StructScan(person); err != nil {
+		tx.Rollback()
+		return nil, fmt.Errorf("failed to scan returned values: %w", err)
+	}
 
-		if err := tx.Commit(); err != nil {
-				return fmt.Errorf("commit failed: %w", err)
-		}
-    return nil
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit failed: %w", err)
+	}
+	return person, nil
 }
 
 func (s *PersonService) DeletePersonById(id int) error {
@@ -136,7 +148,7 @@ func (s *PersonService) DeletePersonById(id int) error {
 		log.Warn().
 			Int("id", id).
 			Msg("No person found to delete")
-		return fmt.Errorf("❌ person with id %d not found", id)
+		return ErrNotFound
 	}
 
 	log.Info().
@@ -161,44 +173,31 @@ func (s *PersonService) DeletePersonById(id int) error {
 // @Param pageSize query int false "Размер страницы"
 // @Success 200 {array} entity.Person
 // @Router /api/persons [get]
-func (s *PersonService) GetPersons(filter entity.PersonFilter) ([]entity.Person, error){
+func (s *PersonService) GetPersons(filter entity.PersonFilter) ([]entity.Person, error) {
 	log.Debug().Msg("Fetching persons with filters")
 
-	type condition struct {
-    field string
-    op    string
-    value interface{}
-	}
+	qb := squirrel.Select("*").From("persons").PlaceholderFormat(squirrel.Dollar)
 
-	conditions := []condition{}
 	if filter.Name != nil {
-		conditions = append(conditions, condition{"name", "ILIKE", "%" + *filter.Name + "%"})
+		qb = qb.Where(squirrel.ILike{"name": "%" + *filter.Name + "%"})
 	}
-
 	if filter.Surname != nil {
-		conditions = append(conditions, condition{"surname", "ILIKE", "%" + *filter.Surname + "%"})
+		qb = qb.Where(squirrel.ILike{"surname": "%" + *filter.Surname + "%"})
 	}
-
+	if filter.Patronymic != nil {
+		qb = qb.Where(squirrel.ILike{"patronymic": "%" + *filter.Patronymic + "%"})
+	}
 	if filter.Gender != nil {
-		conditions = append(conditions, condition{"gender", "=", *filter.Gender})
+		qb = qb.Where(squirrel.Eq{"gender": *filter.Gender})
 	}
-
 	if filter.Nationality != nil {
-		conditions = append(conditions, condition{"nationality", "=", *filter.Nationality})
+		qb = qb.Where(squirrel.Eq{"nationality": *filter.Nationality})
 	}
-
 	if filter.MinAge != nil {
-		conditions = append(conditions, condition{"age", ">=", *filter.MinAge})
+		qb = qb.Where(squirrel.GtOrEq{"age": *filter.MinAge})
 	}
-
 	if filter.MaxAge != nil {
-		conditions = append(conditions, condition{"age", "<=", *filter.MaxAge})
-	}
-	query := `SELECT * FROM persons WHERE 1=1`
-	args:=[]interface{}{}
-	for i,cond := range conditions {
-		query += fmt.Sprintf(" AND %s %s $%d", cond.field,cond.op,i + 1)
-		args = append(args, cond.value)
+		qb = qb.Where(squirrel.LtOrEq{"age": *filter.MaxAge})
 	}
 
 	if filter.Page <= 0 {
@@ -209,47 +208,54 @@ func (s *PersonService) GetPersons(filter entity.PersonFilter) ([]entity.Person,
 	}
 	offset := (filter.Page - 1) * filter.PageSize
 
-	query += fmt.Sprintf(" ORDER BY created_at DESC LIMIT $%d OFFSET $%d", len(args)+1, len(args)+2)
-	args = append(args, filter.PageSize, offset)
+	qb = qb.OrderBy("created_at DESC").Limit(uint64(filter.PageSize)).Offset(uint64(offset))
 
-	log.Debug().
-		Str("query", query).
-		Int("args_len", len(args)).
-		Msg("Final SQL query")
+	query, args, err := qb.ToSql()
+	if err != nil {
+		return nil, err
+	}
 
-		rows, err := s.db.Queryx(query, args...)
-		if err != nil {
-			log.Error().Err(err).Msg("❌ Failed to query persons")
+	log.Debug().Str("query", query).Int("args_len", len(args)).Msg("Final SQL query")
+
+	rows, err := s.db.Queryx(query, args...)
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to query persons")
+		return nil, err
+	}
+	defer rows.Close()
+
+	var persons []entity.Person
+	for rows.Next() {
+		var person entity.Person
+		if err := rows.StructScan(&person); err != nil {
+			log.Error().Err(err).Msg("Failed to scan person row")
 			return nil, err
 		}
-		defer rows.Close()
+		persons = append(persons, person)
+	}
 
-		var persons []entity.Person
-
-		for rows.Next() {
-			var person entity.Person
-			if err := rows.StructScan(&person); err != nil {
-				log.Error().Err(err).Msg("❌ Failed to scan person row")
-				return nil, err
-			}
-			persons = append(persons, person)
-		}
-		log.Info().Int("count", len(persons)).Msg("✅ Persons fetched successfully")
-		return persons, nil
+	log.Info().Int("count", len(persons)).Msg("Persons fetched successfully")
+	return persons, nil
 }
 
-func (s *PersonService) UpdatePerson(id int, updatedPerson *entity.Person) error {
+func (s *PersonService) UpdatePerson(id int, input *entity.UpdatePersonInput) (*entity.Person, error) {
+	updatedPerson := &entity.Person{
+		ID:         id,
+		Name:       input.Name,
+		Surname:    input.Surname,
+		Patronymic: input.Patronymic,
+	}
 	log.Debug().Msg("Change person starting")
-	ctx, cancel := context.WithTimeout(context.Background(),5 * time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	tx, err := s.db.Beginx()
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to start transaction")
-		return err
+		return nil, err
 	}
 
-	defer func(){
+	defer func() {
 		if r := recover(); r != nil {
 			tx.Rollback()
 			log.Error().Interface("panic", r).Msg("Rolled back transaction due to panic")
@@ -257,10 +263,10 @@ func (s *PersonService) UpdatePerson(id int, updatedPerson *entity.Person) error
 		}
 	}()
 
-	if err := enrichFromAPI(ctx, updatedPerson); err != nil {
+	if err := enrichFromAPI(ctx, s.apiClient, updatedPerson); err != nil {
 		tx.Rollback()
 		log.Error().Err(err).Msg("Failed to enrich person")
-		return err
+		return nil, err
 	}
 	query := `
 	UPDATE persons
@@ -275,20 +281,25 @@ func (s *PersonService) UpdatePerson(id int, updatedPerson *entity.Person) error
 		WHERE id = :id;
 	`
 	updatedPerson.ID = id
-	_, err = tx.NamedExecContext(ctx,query,updatedPerson)
+	res, err := tx.NamedExecContext(ctx, query, updatedPerson)
 	if err != nil {
 		tx.Rollback()
 		log.Error().Err(err).Msg("Failed to update person")
-		return err
+		return nil, err
+	}
+	rows, _ := res.RowsAffected()
+	if rows == 0 {
+		tx.Rollback()
+		return nil, ErrNotFound
 	}
 	if err := tx.Commit(); err != nil {
-		return err
+		return nil, err
 	}
 
 	log.Info().
-	Int("id", id).
-	Str("name", updatedPerson.Name).
-	Str("surname", updatedPerson.Surname).
-	Msg("Person updated successfully")
- return nil
+		Int("id", id).
+		Str("name", updatedPerson.Name).
+		Str("surname", updatedPerson.Surname).
+		Msg("Person updated successfully")
+	return updatedPerson, nil
 }
